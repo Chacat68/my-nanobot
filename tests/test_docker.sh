@@ -8,6 +8,10 @@ echo "=== Building Docker image ==="
 docker build -t "$IMAGE_NAME" .
 
 echo ""
+echo "=== Verifying node and npx ==="
+docker run --rm --entrypoint /bin/sh "$IMAGE_NAME" -lc 'node --version && npx --version'
+
+echo ""
 echo "=== Running 'nanobot onboard' ==="
 docker run --name nanobot-test-run "$IMAGE_NAME" onboard
 

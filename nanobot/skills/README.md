@@ -22,4 +22,5 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 | `summarize` | Summarize URLs, files, and YouTube videos |
 | `tmux` | Remote-control tmux sessions |
 | `clawhub` | Search and install skills from ClawHub registry |
+| `skills-sh` | Search and install skills from skills.sh |
 | `skill-creator` | Create new skills |

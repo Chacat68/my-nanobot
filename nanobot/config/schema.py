@@ -33,6 +33,8 @@ class TelegramConfig(Base):
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
     reply_to_message: bool = False  # If true, bot replies quote the original message
+    streaming: Literal["off", "partial", "block", "progress"] = "partial"
+    link_preview: bool = True
 
 
 class FeishuConfig(Base):
@@ -292,6 +294,13 @@ class WebSearchConfig(Base):
     max_results: int = 5
 
 
+class SearXNGConfig(Base):
+    """SearXNG search tool configuration."""
+
+    base_url: str = ""  # SearXNG base URL, e.g. https://searx.example.com
+    max_results: int = 5
+
+
 class WebToolsConfig(Base):
     """Web tools configuration."""
 
@@ -299,6 +308,7 @@ class WebToolsConfig(Base):
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    searxng: SearXNGConfig = Field(default_factory=SearXNGConfig)
 
 
 class ExecToolConfig(Base):

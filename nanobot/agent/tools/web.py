@@ -106,6 +106,78 @@ class WebSearchTool(Tool):
             return f"Error: {e}"
 
 
+class SearXNGSearchTool(Tool):
+    """Search the web using a SearXNG instance."""
+
+    name = "searxng_search"
+    description = "Search the web using a SearXNG instance. Returns titles, URLs, and snippets."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query"},
+            "count": {
+                "type": "integer",
+                "description": "Results (1-10)",
+                "minimum": 1,
+                "maximum": 10,
+            },
+        },
+        "required": ["query"],
+    }
+
+    def __init__(self, base_url: str | None = None, max_results: int = 5, proxy: str | None = None):
+        self._init_base_url = base_url
+        self.max_results = max_results
+        self.proxy = proxy
+
+    @property
+    def base_url(self) -> str:
+        """Resolve base URL at call time so env/config changes are picked up."""
+        return self._init_base_url or os.environ.get("SEARXNG_BASE_URL", "")
+
+    async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
+        base_url = self.base_url.strip()
+        if not base_url:
+            return (
+                "Error: SearXNG base URL not configured. Set it in "
+                "~/.nanobot/config.json under tools.web.searxng.baseUrl "
+                "(or export SEARXNG_BASE_URL), then restart the gateway."
+            )
+
+        is_valid, error_msg = _validate_url(base_url)
+        if not is_valid:
+            return f"Error: Invalid SearXNG base URL: {error_msg}"
+
+        try:
+            n = min(max(count or self.max_results, 1), 10)
+            logger.debug("SearXNGSearch: {}", "proxy enabled" if self.proxy else "direct connection")
+            async with httpx.AsyncClient(proxy=self.proxy) as client:
+                r = await client.get(
+                    f"{base_url.rstrip('/')}/search",
+                    params={"q": query, "format": "json", "language": "auto", "pageno": 1},
+                    headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+                    timeout=10.0,
+                )
+                r.raise_for_status()
+
+            results = r.json().get("results", [])[:n]
+            if not results:
+                return f"No results for: {query}"
+
+            lines = [f"Results for: {query}\n"]
+            for i, item in enumerate(results, 1):
+                lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
+                if desc := item.get("content") or item.get("description"):
+                    lines.append(f"   {desc}")
+            return "\n".join(lines)
+        except httpx.ProxyError as e:
+            logger.error("SearXNGSearch proxy error: {}", e)
+            return f"Proxy error: {e}"
+        except Exception as e:
+            logger.error("SearXNGSearch error: {}", e)
+            return f"Error: {e}"
+
+
 class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
 

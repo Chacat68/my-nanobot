@@ -21,7 +21,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+from nanobot.agent.tools.web import SearXNGSearchTool, WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
@@ -58,6 +58,8 @@ class AgentLoop:
         memory_window: int = 100,
         reasoning_effort: str | None = None,
         brave_api_key: str | None = None,
+        searxng_base_url: str | None = None,
+        searxng_max_results: int = 5,
         web_proxy: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -78,6 +80,8 @@ class AgentLoop:
         self.memory_window = memory_window
         self.reasoning_effort = reasoning_effort
         self.brave_api_key = brave_api_key
+        self.searxng_base_url = searxng_base_url
+        self.searxng_max_results = searxng_max_results
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -95,6 +99,8 @@ class AgentLoop:
             max_tokens=self.max_tokens,
             reasoning_effort=reasoning_effort,
             brave_api_key=brave_api_key,
+            searxng_base_url=searxng_base_url,
+            searxng_max_results=searxng_max_results,
             web_proxy=web_proxy,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
@@ -124,6 +130,13 @@ class AgentLoop:
             path_append=self.exec_config.path_append,
         ))
         self.tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
+        self.tools.register(
+            SearXNGSearchTool(
+                base_url=self.searxng_base_url,
+                max_results=self.searxng_max_results,
+                proxy=self.web_proxy,
+            )
+        )
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))

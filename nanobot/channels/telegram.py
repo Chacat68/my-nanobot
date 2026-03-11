@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 import unicodedata
+from dataclasses import dataclass
+from html import escape
+from typing import Any
 
 from loguru import logger
-from telegram import BotCommand, ReplyParameters, Update
+from telegram import BotCommand, LinkPreviewOptions, ReplyParameters, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
@@ -20,6 +22,7 @@ from nanobot.config.schema import TelegramConfig
 from nanobot.utils.helpers import split_message
 
 TELEGRAM_MAX_MESSAGE_LEN = 4000  # Telegram message character limit
+TELEGRAM_STREAM_UPDATE_INTERVAL_S = 0.25
 
 
 def _strip_md(s: str) -> str:
@@ -147,6 +150,17 @@ def _markdown_to_telegram_html(text: str) -> str:
     return text
 
 
+@dataclass
+class _TelegramStreamState:
+    """Track a live preview message for one Telegram conversation target."""
+
+    message_id: int
+    content: str = ""
+    last_rendered: str = ""
+    last_update_at: float = 0.0
+    finalized: bool = False
+
+
 class TelegramChannel(BaseChannel):
     """
     Telegram channel using long polling.
@@ -179,6 +193,7 @@ class TelegramChannel(BaseChannel):
         self._media_group_buffers: dict[str, dict] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
         self._message_threads: dict[tuple[str, int], int] = {}
+        self._stream_states: dict[tuple[int, int | None], _TelegramStreamState] = {}
 
     def is_allowed(self, sender_id: str) -> bool:
         """Preserve Telegram's legacy id|username allowlist matching."""
@@ -314,6 +329,7 @@ class TelegramChannel(BaseChannel):
         thread_kwargs = {}
         if message_thread_id is not None:
             thread_kwargs["message_thread_id"] = message_thread_id
+        stream_key = self._stream_key(chat_id, message_thread_id)
 
         reply_params = None
         if self.config.reply_to_message:
@@ -355,11 +371,21 @@ class TelegramChannel(BaseChannel):
             is_progress = msg.metadata.get("_progress", False)
 
             for chunk in split_message(msg.content, TELEGRAM_MAX_MESSAGE_LEN):
-                # Final response: simulate streaming via draft, then persist
-                if not is_progress:
-                    await self._send_with_streaming(chat_id, chunk, reply_params, thread_kwargs)
+                if is_progress and self._streaming_enabled():
+                    await self._update_stream_preview(
+                        stream_key=stream_key,
+                        chat_id=chat_id,
+                        text=chunk,
+                        reply_params=reply_params,
+                        thread_kwargs=thread_kwargs,
+                    )
                 else:
-                    await self._send_text(chat_id, chunk, reply_params, thread_kwargs)
+                    await self._finalize_stream_preview(
+                        stream_key=stream_key,
+                        final_text=chunk,
+                        reply_params=reply_params,
+                        thread_kwargs=thread_kwargs,
+                    )
 
     async def _send_text(
         self,
@@ -374,6 +400,7 @@ class TelegramChannel(BaseChannel):
             await self._app.bot.send_message(
                 chat_id=chat_id, text=html, parse_mode="HTML",
                 reply_parameters=reply_params,
+                link_preview_options=LinkPreviewOptions(is_disabled=not self.config.link_preview),
                 **(thread_kwargs or {}),
             )
         except Exception as e:
@@ -383,34 +410,155 @@ class TelegramChannel(BaseChannel):
                     chat_id=chat_id,
                     text=text,
                     reply_parameters=reply_params,
+                    link_preview_options=LinkPreviewOptions(is_disabled=not self.config.link_preview),
                     **(thread_kwargs or {}),
                 )
             except Exception as e2:
                 logger.error("Error sending Telegram message: {}", e2)
 
-    async def _send_with_streaming(
+    def _streaming_enabled(self) -> bool:
+        mode = getattr(self.config, "streaming", "partial")
+        return mode != "off"
+
+    @staticmethod
+    def _stream_key(chat_id: int, message_thread_id: int | None) -> tuple[int, int | None]:
+        return (chat_id, message_thread_id)
+
+    def _preview_placeholder(self) -> str:
+        return escape("…")
+
+    def _prepare_stream_payload(self, text: str) -> tuple[str, str | None]:
+        raw = (text or "").strip()
+        if not raw:
+            raw = "…"
+        try:
+            return _markdown_to_telegram_html(raw), "HTML"
+        except Exception:
+            return raw, None
+
+    async def _send_preview_message(
         self,
         chat_id: int,
         text: str,
         reply_params=None,
         thread_kwargs: dict | None = None,
-    ) -> None:
-        """Simulate streaming via send_message_draft, then persist with send_message."""
-        draft_id = int(time.time() * 1000) % (2**31)
+    ) -> _TelegramStreamState | None:
+        """Create the live preview message that later edits will update."""
+        payload_text, parse_mode = self._prepare_stream_payload(text)
         try:
-            step = max(len(text) // 8, 40)
-            for i in range(step, len(text), step):
-                await self._app.bot.send_message_draft(
-                    chat_id=chat_id, draft_id=draft_id, text=text[:i],
-                )
-                await asyncio.sleep(0.04)
-            await self._app.bot.send_message_draft(
-                chat_id=chat_id, draft_id=draft_id, text=text,
+            sent = await self._app.bot.send_message(
+                chat_id=chat_id,
+                text=payload_text,
+                parse_mode=parse_mode,
+                reply_parameters=reply_params,
+                link_preview_options=LinkPreviewOptions(is_disabled=not self.config.link_preview),
+                **(thread_kwargs or {}),
             )
-            await asyncio.sleep(0.15)
-        except Exception:
-            pass
-        await self._send_text(chat_id, text, reply_params, thread_kwargs)
+            message_id = getattr(sent, "message_id", None)
+            if not isinstance(message_id, int):
+                return None
+            return _TelegramStreamState(
+                message_id=message_id,
+                content=text,
+                last_rendered=payload_text,
+            )
+        except Exception as e:
+            logger.warning("Failed to create Telegram preview message: {}", e)
+            return None
+
+    async def _edit_preview_message(
+        self,
+        *,
+        chat_id: int,
+        stream_state: _TelegramStreamState,
+        text: str,
+        thread_kwargs: dict | None = None,
+        force: bool = False,
+    ) -> bool:
+        """Edit the existing preview message in place."""
+        payload_text, parse_mode = self._prepare_stream_payload(text)
+        now = asyncio.get_running_loop().time()
+        if not force:
+            if payload_text == stream_state.last_rendered:
+                stream_state.content = text
+                return True
+            if now - stream_state.last_update_at < TELEGRAM_STREAM_UPDATE_INTERVAL_S:
+                stream_state.content = text
+                return True
+        try:
+            await self._app.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=stream_state.message_id,
+                text=payload_text,
+                parse_mode=parse_mode,
+                link_preview_options=LinkPreviewOptions(is_disabled=not self.config.link_preview),
+                **(thread_kwargs or {}),
+            )
+            stream_state.content = text
+            stream_state.last_rendered = payload_text
+            stream_state.last_update_at = now
+            return True
+        except Exception as e:
+            logger.warning("Failed to edit Telegram preview message: {}", e)
+            return False
+
+    async def _update_stream_preview(
+        self,
+        *,
+        stream_key: tuple[int, int | None],
+        chat_id: int,
+        text: str,
+        reply_params=None,
+        thread_kwargs: dict | None = None,
+    ) -> None:
+        """Update the live preview for agent progress output."""
+        stream_state = self._stream_states.get(stream_key)
+        if stream_state is None or stream_state.finalized:
+            created = await self._send_preview_message(
+                chat_id=chat_id,
+                text=text,
+                reply_params=reply_params,
+                thread_kwargs=thread_kwargs,
+            )
+            if created is not None:
+                self._stream_states[stream_key] = created
+            return
+
+        stream_state.content = text
+        await self._edit_preview_message(
+            chat_id=chat_id,
+            stream_state=stream_state,
+            text=text,
+            thread_kwargs=thread_kwargs,
+        )
+
+    async def _finalize_stream_preview(
+        self,
+        *,
+        stream_key: tuple[int, int | None],
+        final_text: str,
+        reply_params=None,
+        thread_kwargs: dict | None = None,
+    ) -> None:
+        """Replace the preview with the final answer or fall back to a normal send."""
+        chat_id = stream_key[0]
+        stream_state = self._stream_states.pop(stream_key, None)
+        if stream_state is None or not self._streaming_enabled():
+            await self._send_text(chat_id, final_text, reply_params, thread_kwargs)
+            return
+
+        edited = await self._edit_preview_message(
+            chat_id=chat_id,
+            stream_state=stream_state,
+            text=final_text,
+            thread_kwargs=thread_kwargs,
+            force=True,
+        )
+        if edited:
+            stream_state.finalized = True
+            return
+
+        await self._send_text(chat_id, final_text, reply_params, thread_kwargs)
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""

@@ -11,7 +11,7 @@ from loguru import logger
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+from nanobot.agent.tools.web import SearXNGSearchTool, WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import ExecToolConfig
@@ -31,6 +31,8 @@ class SubagentManager:
         max_tokens: int = 4096,
         reasoning_effort: str | None = None,
         brave_api_key: str | None = None,
+        searxng_base_url: str | None = None,
+        searxng_max_results: int = 5,
         web_proxy: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
@@ -44,6 +46,8 @@ class SubagentManager:
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         self.brave_api_key = brave_api_key
+        self.searxng_base_url = searxng_base_url
+        self.searxng_max_results = searxng_max_results
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
@@ -107,6 +111,13 @@ class SubagentManager:
                 path_append=self.exec_config.path_append,
             ))
             tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
+            tools.register(
+                SearXNGSearchTool(
+                    base_url=self.searxng_base_url,
+                    max_results=self.searxng_max_results,
+                    proxy=self.web_proxy,
+                )
+            )
             tools.register(WebFetchTool(proxy=self.web_proxy))
             
             system_prompt = self._build_subagent_prompt()

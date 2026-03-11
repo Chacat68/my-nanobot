@@ -21,8 +21,9 @@
 ## 📢 News
 
 - **2026-03-07** 🚀 Azure OpenAI provider, WhatsApp media, QQ group chats, and more Telegram/Feishu polish.
+- **2026-03-09** ✨ Telegram now supports native live stream preview via message edits, with configurable preview and link preview behavior.
 - **2026-03-06** 🪄 Lighter providers, smarter media handling, and sturdier memory and CLI compatibility.
-- **2026-03-05** ⚡️ Telegram draft streaming, MCP SSE support, and broader channel reliability fixes.
+- **2026-03-05** ⚡️ Telegram streaming groundwork, MCP SSE support, and broader channel reliability fixes.
 - **2026-03-04** 🛠️ Dependency cleanup, safer file reads, and another round of test and Cron fixes.
 - **2026-03-03** 🧠 Cleaner user-message merging, safer multimodal saves, and stronger Cron guards.
 - **2026-03-02** 🛡️ Safer default access control, sturdier Cron reloads, and cleaner Matrix media handling.
@@ -126,7 +127,7 @@ pip install nanobot-ai
 
 > [!TIP]
 > Set your API key in `~/.nanobot/config.json`.
-> Get API keys: [OpenRouter](https://openrouter.ai/keys) (Global) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
+> Get API keys: [OpenRouter](https://openrouter.ai/keys) (Global) · [Brave Search](https://brave.com/search/api/) (optional, for web search) · [SearXNG](https://docs.searxng.org/) (optional, self-hosted/public instance)
 
 **1. Initialize**
 
@@ -201,7 +202,9 @@ Connect nanobot to your favorite chat platform.
     "telegram": {
       "enabled": true,
       "token": "YOUR_BOT_TOKEN",
-      "allowFrom": ["YOUR_USER_ID"]
+      "allowFrom": ["YOUR_USER_ID"],
+      "streaming": "partial",
+      "linkPreview": true
     }
   }
 }
@@ -209,6 +212,9 @@ Connect nanobot to your favorite chat platform.
 
 > You can find your **User ID** in Telegram settings. It is shown as `@yourUserId`.
 > Copy this value **without the `@` symbol** and paste it into the config file.
+
+> `streaming` controls Telegram live preview behavior. Use `partial` or `progress` for native in-place preview updates, `block` for legacy-compatible preview mode, and `off` to disable preview edits entirely.
+> `linkPreview` toggles Telegram link previews for both preview updates and final replies.
 
 
 **3. Run**
@@ -894,6 +900,31 @@ Use `toolTimeout` to override the default 30s per-call timeout for slow servers:
 MCP tools are automatically discovered and registered on startup. The LLM can use them alongside built-in tools — no extra configuration needed.
 
 
+### Web Search
+
+nanobot includes two built-in web search tools:
+
+- `web_search`: Brave Search API
+- `searxng_search`: SearXNG instance (self-hosted or public)
+
+Configure SearXNG in your `config.json`:
+
+```json
+{
+  "tools": {
+    "web": {
+      "searxng": {
+        "baseUrl": "https://your-searxng.example.com",
+        "maxResults": 5
+      }
+    }
+  }
+}
+```
+
+You can also set `SEARXNG_BASE_URL` in the environment instead of using config.
+
+
 
 
 ### Security
@@ -1068,6 +1099,15 @@ docker compose logs -f nanobot-gateway                   # view logs
 docker compose down                                      # stop
 ```
 
+Install skills from inside the container with the bundled `node`/`npx` runtime:
+
+```bash
+docker compose run --rm --entrypoint /bin/sh nanobot-cli -lc 'npx skills add vercel-labs/agent-skills'
+docker compose run --rm --entrypoint /bin/sh nanobot-cli -lc 'npx --yes clawhub@latest install <slug> --workdir ~/.nanobot/workspace'
+```
+
+Because `~/.nanobot` is mounted into the container, installed skills persist on the host.
+
 ### Docker
 
 ```bash
@@ -1087,6 +1127,15 @@ docker run -v ~/.nanobot:/root/.nanobot -p 18790:18790 nanobot gateway
 docker run -v ~/.nanobot:/root/.nanobot --rm nanobot agent -m "Hello!"
 docker run -v ~/.nanobot:/root/.nanobot --rm nanobot status
 ```
+
+To install skills from the Docker image, override the default `nanobot` entrypoint and run the registry CLI directly:
+
+```bash
+docker run -v ~/.nanobot:/root/.nanobot --rm --entrypoint /bin/sh nanobot -lc 'npx skills add vercel-labs/agent-skills'
+docker run -v ~/.nanobot:/root/.nanobot --rm --entrypoint /bin/sh nanobot -lc 'npx --yes clawhub@latest install <slug> --workdir ~/.nanobot/workspace'
+```
+
+Start a new nanobot session after installing a skill so it is included in the next prompt context.
 
 ## 🐧 Linux Service
 

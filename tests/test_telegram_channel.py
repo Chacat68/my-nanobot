@@ -27,6 +27,7 @@ class _FakeUpdater:
 class _FakeBot:
     def __init__(self) -> None:
         self.sent_messages: list[dict] = []
+        self.edited_messages: list[dict] = []
 
     async def get_me(self):
         return SimpleNamespace(username="nanobot_test")
@@ -36,6 +37,10 @@ class _FakeBot:
 
     async def send_message(self, **kwargs) -> None:
         self.sent_messages.append(kwargs)
+        return SimpleNamespace(message_id=len(self.sent_messages))
+
+    async def edit_message_text(self, **kwargs) -> None:
+        self.edited_messages.append(kwargs)
 
 
 class _FakeApp:
@@ -162,6 +167,69 @@ async def test_send_progress_keeps_message_in_topic() -> None:
     )
 
     assert channel._app.bot.sent_messages[0]["message_thread_id"] == 42
+    assert channel._app.bot.sent_messages[0]["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_progress_and_final_response_reuse_single_preview_message() -> None:
+    config = TelegramConfig(enabled=True, token="123:abc", allow_from=["*"], streaming="partial")
+    channel = TelegramChannel(config, MessageBus())
+    channel._app = _FakeApp(lambda: None)
+
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="draft 1",
+            metadata={"_progress": True},
+        )
+    )
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="final answer",
+            metadata={},
+        )
+    )
+
+    assert len(channel._app.bot.sent_messages) == 1
+    assert channel._app.bot.sent_messages[0]["text"] == "draft 1"
+    assert len(channel._app.bot.edited_messages) == 1
+    assert channel._app.bot.edited_messages[0]["message_id"] == 1
+    assert channel._app.bot.edited_messages[0]["text"] == "final answer"
+
+
+@pytest.mark.asyncio
+async def test_subsequent_progress_updates_edit_existing_preview_message() -> None:
+    config = TelegramConfig(enabled=True, token="123:abc", allow_from=["*"], streaming="partial")
+    channel = TelegramChannel(config, MessageBus())
+    channel._app = _FakeApp(lambda: None)
+
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="draft 1",
+            metadata={"_progress": True},
+        )
+    )
+
+    stream_state = channel._stream_states[(123, None)]
+    stream_state.last_update_at = 0.0
+
+    await channel.send(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="draft 2",
+            metadata={"_progress": True},
+        )
+    )
+
+    assert len(channel._app.bot.sent_messages) == 1
+    assert len(channel._app.bot.edited_messages) == 1
+    assert channel._app.bot.edited_messages[0]["text"] == "draft 2"
 
 
 @pytest.mark.asyncio
